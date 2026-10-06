@@ -72,3 +72,44 @@ def port_stats(dpid: Any, payload: Any) -> Dict[str, Any]:
         "rx_errors": p.get("rx_errors"), "tx_errors": p.get("tx_errors"),
         "rx_dropped": p.get("rx_dropped"), "tx_dropped": p.get("tx_dropped"),
     } for p in entries]}
+
+
+def shortest_path(switches: Any, links: Any, src: str, dst: str) -> Dict[str, Any]:
+    """Hop-count shortest path between two datapaths over discovered links.
+
+    Breadth-first over rest_topology's links. Each hop records the egress and
+    ingress port so the result can be turned into flows. A path that needs a
+    link in one direction only is not offered: traffic would not come back.
+    """
+    from collections import deque
+    known = {s.get("dpid") for s in (switches if isinstance(switches, list) else [])}
+    if src not in known or dst not in known:
+        missing = [d for d in (src, dst) if d not in known]
+        return {"found": False, "path": [],
+                "reason": f"unknown datapath(s): {', '.join(missing)}"}
+    if src == dst:
+        return {"found": True, "hops": 0, "path": [src], "ports": []}
+    adj: Dict[str, Dict[str, Any]] = {}
+    pairs = set()
+    for l in links if isinstance(links, list) else []:
+        s, d = l.get("src", {}), l.get("dst", {})
+        pairs.add((s.get("dpid"), d.get("dpid")))
+        adj.setdefault(s.get("dpid"), {})[d.get("dpid")] = (s.get("port_no"), d.get("port_no"))
+    prev = {src: None}
+    q = deque([src])
+    while q:
+        u = q.popleft()
+        for v in adj.get(u, {}):
+            if v not in prev and (v, u) in pairs:
+                prev[v] = u
+                q.append(v)
+    if dst not in prev:
+        return {"found": False, "path": [],
+                "reason": "no bidirectional link path between them in this domain"}
+    path = [dst]
+    while prev[path[-1]] is not None:
+        path.append(prev[path[-1]])
+    path.reverse()
+    ports = [{"from": u, "out_port": adj[u][v][0], "to": v, "in_port": adj[u][v][1]}
+             for u, v in zip(path, path[1:])]
+    return {"found": True, "hops": len(ports), "path": path, "ports": ports}

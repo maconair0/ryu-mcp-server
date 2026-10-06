@@ -82,6 +82,22 @@ def create_server(cfg: RyuConfig, client: Optional[RyuClient] = None,
             return _failure("get_topology", e)
 
     @mcp.tool()
+    async def ryu_compute_path(src_dpid: str, dst_dpid: str) -> str:
+        """Shortest path between two switches over Ryu's discovered links. Read only.
+
+        Accepts either dpid spelling. Same switch in and out is a zero-hop path,
+        which is the normal case for an edge site that meets the rest of the
+        network only through its uplink.
+        """
+        try:
+            sw = await client.get("/v1.0/topology/switches")
+            ln = await client.get("/v1.0/topology/links")
+            got = summarise.shortest_path(sw, ln, dpid_hex(src_dpid), dpid_hex(dst_dpid))
+            return _reply({"ok": True, "data": got})
+        except Exception as e:  # noqa: BLE001
+            return _failure("compute_path", e)
+
+    @mcp.tool()
     async def ryu_list_switches() -> str:
         """Connected datapaths, by id in both spellings Ryu uses."""
         try:

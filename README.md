@@ -35,6 +35,7 @@ front of every change and would otherwise ask twice.
 | `ryu_get_switch` | one switch's description and port states |
 | `ryu_get_flows` | installed flows with packet counters |
 | `ryu_get_port_stats` | per-port packet, error and drop counters |
+| `ryu_compute_path` | hop-count shortest path between two switches over discovered links; same switch is a zero-hop path |
 
 | write tool | queues |
 |---|---|

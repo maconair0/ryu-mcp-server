@@ -163,3 +163,33 @@ class FailureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShortestPath(unittest.TestCase):
+    SW = [{"dpid": "0000000000000001"}, {"dpid": "0000000000000002"},
+          {"dpid": "0000000000000003"}]
+
+    @staticmethod
+    def link(a, ap, z, zp):
+        return {"src": {"dpid": a, "port_no": ap}, "dst": {"dpid": z, "port_no": zp}}
+
+    def test_same_switch_is_zero_hops(self):
+        got = summarise.shortest_path(self.SW, [], "0000000000000001", "0000000000000001")
+        self.assertEqual((got["found"], got["hops"]), (True, 0))
+
+    def test_two_hops_with_ports(self):
+        a, b, c = (s["dpid"] for s in self.SW)
+        links = [self.link(a, "2", b, "1"), self.link(b, "1", a, "2"),
+                 self.link(b, "3", c, "1"), self.link(c, "1", b, "3")]
+        got = summarise.shortest_path(self.SW, links, a, c)
+        self.assertEqual(got["path"], [a, b, c])
+        self.assertEqual(got["ports"][0]["out_port"], "2")
+
+    def test_one_way_link_is_not_a_path(self):
+        a, b, _ = (s["dpid"] for s in self.SW)
+        got = summarise.shortest_path(self.SW, [self.link(a, "2", b, "1")], a, b)
+        self.assertFalse(got["found"])
+
+    def test_unknown_switch(self):
+        got = summarise.shortest_path(self.SW, [], "0000000000000001", "00000000000000ff")
+        self.assertIn("unknown", got["reason"])
