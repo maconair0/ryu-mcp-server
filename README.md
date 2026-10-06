@@ -136,7 +136,7 @@ ryu_map_vlan(dpid="0000000000000101", client_port=1, uplink_port=3, vlan_id=10)
 python -m unittest discover -s tests -t .
 ```
 
-No Ryu or network needed; the REST API is faked. Includes tests that a queued or
+No Ryu or network needed; the REST API is dummy. Includes tests that a queued or
 rejected write leaves Ryu untouched.
 
 ## Licence
