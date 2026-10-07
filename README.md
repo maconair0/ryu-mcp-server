@@ -122,6 +122,11 @@ h1 (10.10.0.1) ─┐                         ┌─ h3 (10.10.0.2)
 h2 (10.20.0.1) ─┘    (0x101)              (0x102)  └─ h4 (10.20.0.2)
 ```
 
+OVSDB answers on port 6640 inside the container, for agents that read the
+switches' port state and counters directly. It is not published on the host;
+join the container to a network to reach it
+(`docker network connect --alias ryu-lab <net> ryu-lab`).
+
 The edge switches are not linked to each other: traffic between the sites has to
 cross the core, which is another controller's domain. `core1` and `core2` stand
 in for that handover. No forwarding app runs, so nothing passes until flows are
