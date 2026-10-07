@@ -160,6 +160,18 @@ class FailureTests(unittest.TestCase):
         self.assertFalse(out["ok"])
         self.assertEqual(out["error"], "unreachable")
 
+class SwitchNameTest(unittest.TestCase):
+    def test_topology_names_a_switch_after_its_local_port(self):
+        from ryu_mcp import summarise
+        desc = {"14549253": [{"port_no": 1, "name": "berlin-p1"},
+                             {"port_no": "LOCAL", "name": "berlin_SW1"}]}
+        assert summarise.switch_name(desc) == "berlin_SW1"
+        assert summarise.switch_name({"1": [{"port_no": 1, "name": "s1-eth1"}]}) == ""
+        out = summarise.topology([{"dpid": "0000000000de0101", "ports": []}], [], [],
+                                 {"0000000000de0101": "berlin_SW1"})
+        assert out["switch_detail"][0]["name"] == "berlin_SW1"
+        assert summarise.topology([{"dpid": "01", "ports": []}], [], [])["switch_detail"][0]["name"] == ""
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -76,8 +76,20 @@ def create_server(cfg: RyuConfig, client: Optional[RyuClient] = None,
             sw = await client.get("/v1.0/topology/switches")
             ln = await client.get("/v1.0/topology/links")
             ho = await client.get("/v1.0/topology/hosts")
-            data = {"switches": sw, "links": ln, "hosts": ho} if raw \
-                else summarise.topology(sw, ln, ho)
+            if raw:
+                data = {"switches": sw, "links": ln, "hosts": ho}
+            else:
+                # rest_topology leaves out the LOCAL port, which is the only
+                # place a switch's own name is: port names are limited to 15
+                # characters and cannot always carry it.
+                names = {}
+                for s in sw if isinstance(sw, list) else []:
+                    try:
+                        names[s.get("dpid")] = summarise.switch_name(
+                            await client.get(f"/stats/portdesc/{int(s.get('dpid'), 16)}"))
+                    except Exception:  # noqa: BLE001  a name is not worth failing the read
+                        pass
+                data = summarise.topology(sw, ln, ho, names)
             return _reply({"ok": True, "data": data})
         except Exception as e:  # noqa: BLE001
             return _failure("get_topology", e)

@@ -6,7 +6,20 @@ from .client import dpid_hex
 DETAIL = 64
 
 
-def topology(switches: Any, links: Any, hosts: Any) -> Dict[str, Any]:
+def switch_name(portdesc: Any) -> str:
+    """A switch's own name: that of its LOCAL port, which Open vSwitch names
+    after the bridge. Empty when the switch does not say."""
+    rows = next(iter(portdesc.values()), []) if isinstance(portdesc, dict) else []
+    for p in rows if isinstance(rows, list) else []:
+        if str(p.get("port_no")) in ("LOCAL", "4294967294"):
+            return str(p.get("name") or "")
+    return ""
+
+
+def topology(switches: Any, links: Any, hosts: Any,
+             names: Dict[str, str] = None) -> Dict[str, Any]:
+    """`names` maps a dpid to the switch's own name, where it is known."""
+    names = names or {}
     switches = switches if isinstance(switches, list) else []
     links = links if isinstance(links, list) else []
     hosts = hosts if isinstance(hosts, list) else []
@@ -24,6 +37,7 @@ def topology(switches: Any, links: Any, hosts: Any) -> Dict[str, Any]:
         "hosts": len(hosts),
         "switch_detail": [{
             "dpid": s.get("dpid"),
+            "name": names.get(s.get("dpid"), ""),
             "ports": [{"port_no": p.get("port_no"), "name": p.get("name"),
                        "hw_addr": p.get("hw_addr")} for p in s.get("ports", [])],
         } for s in switches[:DETAIL]],
