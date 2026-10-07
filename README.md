@@ -25,6 +25,13 @@ the model will set. The single bypass, `RYU_MCP_WRITE_MODE=direct`, is chosen by
 whoever starts the server — for a host system that already puts a person in
 front of every change and would otherwise ask twice.
 
+**Approval by a host system.** A host that puts its own person in front of each
+change (edgeLM confirms as root, for instance) can approve that one request over
+MCP with `ryu_approve_request(approval_id, approver_token)`. The token is set by
+the operator in `RYU_MCP_APPROVER_TOKEN` on this server and held by the host;
+it is not a model's argument to choose. Unset, the tool always refuses and
+approval stays on the command line. Every use is in the audit log.
+
 **Surviving a restart.** Ryu holds no flows of its own; a switch that restarts
 comes back empty. The server watches the connected switches (every 30 s,
 `--watch-interval` or `RYU_REPLAY_WATCH`, 0 to turn off) and, when one connects,
@@ -50,6 +57,7 @@ Nothing new is approved by this: it puts back the state approval was given for.
 | `ryu_delete_flow` | removal of one exact flow (`/stats/flowentry/delete_strict`) |
 | `ryu_map_vlan` | a client port onto a VLAN on an uplink, both directions |
 | `ryu_unmap_vlan` | removes a mapping: the exact inverse of `ryu_map_vlan`, same four arguments |
+| `ryu_approve_request` | approves and applies one queued write — only with the operator's `RYU_MCP_APPROVER_TOKEN` |
 
 Every tool returns JSON with `ok`. A refusal or an unreachable Ryu comes back as
 data, not as an exception.

@@ -152,3 +152,35 @@ class WriteGate:
                 failed.append({"id": item["id"], "error": str(e)})
         self.audit({"event": "replayed", "ids": replayed, "failed": failed})
         return {"replayed": replayed, "failed": failed}
+
+    async def approve_and_apply(self, item_id: str, client, by: str) -> Dict[str, Any]:
+        """Approve one pending write and apply it now — that one only.
+
+        For a host that has already had a person confirm this exact change;
+        `by` names who, for the audit trail.
+        """
+        with self._lock:
+            items = self._load()
+            item = items.get(item_id)
+            if item is None:
+                return {"ok": False, "error": f"no queued request {item_id}"}
+            if item["state"] != "pending":
+                return {"ok": False, "error": f"{item_id} is already {item['state']}"}
+            item["state"], item["decided"] = "approved", _now()
+            self._save(items)
+        self.audit({"event": "approved", "id": item_id, "by": by})
+        try:
+            for call in item["calls"]:
+                await client.post(call["path"], call["body"])
+            item["state"], item["result"] = "applied", "ok"
+        except Exception as e:  # noqa: BLE001
+            item["state"], item["result"] = "failed", f"{type(e).__name__}: {e}"
+        item["applied"] = _now()
+        with self._lock:
+            items = self._load()
+            items[item_id] = item
+            self._save(items)
+        self.audit({"event": item["state"], "id": item_id, "result": item.get("result")})
+        return {"ok": item["state"] == "applied", "id": item_id, "state": item["state"],
+                "action": item.get("action"), "summary": item.get("summary"),
+                **({"error": item["result"]} if item["state"] == "failed" else {})}

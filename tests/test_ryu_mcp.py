@@ -225,3 +225,21 @@ class Unmap(unittest.TestCase):
         self.assertEqual([(b["match"], b["priority"]) for b in made],
                          [(b["match"], b["priority"]) for b in undone])
         self.assertTrue(all(b["actions"] == [] for b in undone))
+
+
+class ApproveOne(unittest.TestCase):
+    def test_only_the_named_request_is_applied(self):
+        sent = []
+
+        class Client:
+            async def post(self, path, body):
+                sent.append(body["n"])
+
+        with tempfile.TemporaryDirectory() as d:
+            gate = WriteGate(d)
+            a = gate.request("ryu_unmap_vlan", "a", [{"path": "/x", "body": {"n": 1}}])
+            gate.request("ryu_unmap_vlan", "b", [{"path": "/x", "body": {"n": 2}}])
+            got = asyncio.run(gate.approve_and_apply(a["approval_id"], Client(), by="t"))
+            again = asyncio.run(gate.approve_and_apply(a["approval_id"], Client(), by="t"))
+        self.assertEqual((got["state"], sent), ("applied", [1]))
+        self.assertFalse(again["ok"])

@@ -19,6 +19,10 @@ class RyuConfig:
     state_dir: str
     mcp_host: str
     mcp_port: int
+    # A secret an authenticated host system presents to approve one queued
+    # write after a person has confirmed it there (ryu_approve_request).
+    # Unset: no approval over MCP at all, only the CLI.
+    approver_token: str = ""
 
     @classmethod
     def from_env(cls, **overrides) -> "RyuConfig":
@@ -36,6 +40,7 @@ class RyuConfig:
                 os.path.dirname(os.path.abspath(__file__)), "state")),
             mcp_host=_env("RYU_MCP_HOST", default="127.0.0.1"),
             mcp_port=int(_env("RYU_MCP_PORT", default="3005")),
+            approver_token=_env("RYU_MCP_APPROVER_TOKEN", default=""),
         )
         for key, value in overrides.items():
             if value is not None:

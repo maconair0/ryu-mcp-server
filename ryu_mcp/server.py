@@ -11,7 +11,8 @@ from .gate import WriteGate
 
 READ_TOOLS = ["ryu_health_check", "ryu_get_topology", "ryu_list_switches",
               "ryu_get_switch", "ryu_get_flows", "ryu_get_port_stats"]
-WRITE_TOOLS = ["ryu_add_flow", "ryu_delete_flow", "ryu_map_vlan", "ryu_unmap_vlan"]
+WRITE_TOOLS = ["ryu_add_flow", "ryu_delete_flow", "ryu_map_vlan", "ryu_unmap_vlan",
+               "ryu_approve_request"]
 
 
 def _reply(obj: Dict[str, Any]) -> str:
@@ -212,5 +213,28 @@ def create_server(cfg: RyuConfig, client: Optional[RyuClient] = None,
                 [{"path": "/stats/flowentry/delete_strict", "body": b} for b in bodies])
         except Exception as e:  # noqa: BLE001
             return _failure("unmap_vlan", e)
+
+    @mcp.tool()
+    async def ryu_approve_request(approval_id: str, approver_token: str) -> str:
+        """Approve and apply one queued write, for a host that confirmed it with a person.
+
+        Needs the token the operator configured on this server
+        (RYU_MCP_APPROVER_TOKEN). With none configured this always refuses and
+        approval stays CLI-only. The token is a credential of the host system,
+        not something a model chooses: a host should present it only after its
+        own human confirmation of this exact change.
+        """
+        import hmac
+        if not cfg.approver_token:
+            return _reply({"ok": False, "error": "disabled",
+                           "detail": "no RYU_MCP_APPROVER_TOKEN is configured on this "
+                                     "server; approve with run_ryu_mcp.py --approve"})
+        if not hmac.compare_digest(str(approver_token), cfg.approver_token):
+            gate.audit({"event": "approval_refused_bad_token", "id": approval_id})
+            return _reply({"ok": False, "error": "refused", "detail": "approver token mismatch"})
+        try:
+            return _reply(await gate.approve_and_apply(approval_id, client, by="mcp-approver"))
+        except Exception as e:  # noqa: BLE001
+            return _failure("approve_request", e)
 
     return mcp
