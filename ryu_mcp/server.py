@@ -11,7 +11,7 @@ from .gate import WriteGate
 
 READ_TOOLS = ["ryu_health_check", "ryu_get_topology", "ryu_list_switches",
               "ryu_get_switch", "ryu_get_flows", "ryu_get_port_stats"]
-WRITE_TOOLS = ["ryu_add_flow", "ryu_delete_flow", "ryu_map_vlan"]
+WRITE_TOOLS = ["ryu_add_flow", "ryu_delete_flow", "ryu_map_vlan", "ryu_unmap_vlan"]
 
 
 def _reply(obj: Dict[str, Any]) -> str:
@@ -192,5 +192,25 @@ def create_server(cfg: RyuConfig, client: Optional[RyuClient] = None,
                 [{"path": "/stats/flowentry/add", "body": b} for b in bodies])
         except Exception as e:  # noqa: BLE001
             return _failure("map_vlan", e)
+
+    @mcp.tool()
+    async def ryu_unmap_vlan(dpid: str, client_port: int, uplink_port: int, vlan_id: int) -> str:
+        """Remove a VLAN mapping: the exact inverse of ryu_map_vlan, both directions.
+
+        Takes the same four arguments the mapping was made with. Only those two
+        flows are removed (strict match on match and priority), so other
+        mappings on the switch are untouched. Queued for approval like any write.
+        """
+        try:
+            bodies = schemas.vlan_unmap(dpid, client_port, uplink_port, vlan_id)
+        except (schemas.SchemaError, ValueError) as e:
+            return _reply({"ok": False, "error": "invalid", "detail": str(e)})
+        try:
+            return await _write(
+                "ryu_unmap_vlan",
+                f"unmap {dpid_hex(dpid)} port {client_port} <-> uplink {uplink_port} vlan {vlan_id}",
+                [{"path": "/stats/flowentry/delete_strict", "body": b} for b in bodies])
+        except Exception as e:  # noqa: BLE001
+            return _failure("unmap_vlan", e)
 
     return mcp

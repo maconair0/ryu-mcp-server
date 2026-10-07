@@ -49,6 +49,7 @@ Nothing new is approved by this: it puts back the state approval was given for.
 | `ryu_add_flow` | one flow (`/stats/flowentry/add`) |
 | `ryu_delete_flow` | removal of one exact flow (`/stats/flowentry/delete_strict`) |
 | `ryu_map_vlan` | a client port onto a VLAN on an uplink, both directions |
+| `ryu_unmap_vlan` | removes a mapping: the exact inverse of `ryu_map_vlan`, same four arguments |
 
 Every tool returns JSON with `ok`. A refusal or an unreachable Ryu comes back as
 data, not as an exception.

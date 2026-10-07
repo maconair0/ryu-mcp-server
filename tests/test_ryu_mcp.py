@@ -216,3 +216,12 @@ class Replay(unittest.TestCase):
         self.assertEqual(sent, [("/add", 1), ("/del", 2)])
         self.assertEqual(len(got["replayed"]), 2)
         self.assertTrue(ignored["approval_id"])
+
+
+class Unmap(unittest.TestCase):
+    def test_unmap_is_the_exact_inverse_of_map(self):
+        made = schemas.vlan_map("0000000000000101", 1, 3, 10)
+        undone = schemas.vlan_unmap("0000000000000101", 1, 3, 10)
+        self.assertEqual([(b["match"], b["priority"]) for b in made],
+                         [(b["match"], b["priority"]) for b in undone])
+        self.assertTrue(all(b["actions"] == [] for b in undone))

@@ -22,6 +22,8 @@ POLICIES: Dict[str, Dict[str, Any]] = {
     "ryu_add_flow": {"risk_tier": "medium", "max_changes_per_hour": 30},
     "ryu_delete_flow": {"risk_tier": "high", "max_changes_per_hour": 20},
     "ryu_map_vlan": {"risk_tier": "medium", "max_changes_per_hour": 20},
+    # Removing a mapping cuts a service off: high, like deleting a flow.
+    "ryu_unmap_vlan": {"risk_tier": "high", "max_changes_per_hour": 20},
 }
 
 

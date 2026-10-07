@@ -79,3 +79,15 @@ def vlan_map(dpid: Any, client_port: int, uplink_port: int, vlan_id: int,
             {"type": "OUTPUT", "port": int(client_port)},
         ], priority=priority),
     ]
+
+
+def vlan_unmap(dpid: Any, client_port: int, uplink_port: int, vlan_id: int,
+               priority: int = 200) -> List[Dict[str, Any]]:
+    """The exact inverse of `vlan_map`: both of its flows, matched strictly.
+
+    `delete_strict` removes only a flow with this match *and* priority, so a
+    mapping another circuit made on the same switch is left alone. Built from
+    `vlan_map` itself, so the two cannot drift apart.
+    """
+    return [{**body, "actions": []}
+            for body in vlan_map(dpid, client_port, uplink_port, vlan_id, priority)]
