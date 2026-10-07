@@ -25,6 +25,13 @@ the model will set. The single bypass, `RYU_MCP_WRITE_MODE=direct`, is chosen by
 whoever starts the server — for a host system that already puts a person in
 front of every change and would otherwise ask twice.
 
+**Surviving a restart.** Ryu holds no flows of its own; a switch that restarts
+comes back empty. The server watches the connected switches (every 30 s,
+`--watch-interval` or `RYU_REPLAY_WATCH`, 0 to turn off) and, when one connects,
+re-installs every write that was approved and applied, oldest first, so a later
+delete still follows the add it removed. `--replay` does the same once, by hand.
+Nothing new is approved by this: it puts back the state approval was given for.
+
 ## Tools
 
 | read tool | answers |
@@ -94,7 +101,7 @@ clean way to run both:
 
 ```bash
 docker build -t ryu-lab lab/
-docker run -d --name ryu-lab --privileged \
+docker run -d --name ryu-lab --privileged --restart unless-stopped \
   -p 8080:8080 -p 6653:6653 -v /lib/modules:/lib/modules:ro ryu-lab
 ```
 

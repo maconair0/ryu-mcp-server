@@ -193,3 +193,26 @@ class ShortestPath(unittest.TestCase):
     def test_unknown_switch(self):
         got = summarise.shortest_path(self.SW, [], "0000000000000001", "00000000000000ff")
         self.assertIn("unknown", got["reason"])
+
+
+class Replay(unittest.TestCase):
+    def test_applied_writes_replay_in_order(self):
+        sent = []
+
+        class Client:
+            async def post(self, path, body):
+                sent.append((path, body["n"]))
+
+        with tempfile.TemporaryDirectory() as d:
+            gate = WriteGate(d)
+            first = gate.request("ryu_add_flow", "a", [{"path": "/add", "body": {"n": 1}}])
+            second = gate.request("ryu_delete_flow", "b", [{"path": "/del", "body": {"n": 2}}])
+            ignored = gate.request("ryu_add_flow", "c", [{"path": "/add", "body": {"n": 3}}])
+            for item in (first, second):
+                gate.decide(item["approval_id"], True)
+                asyncio.run(gate.apply_approved(Client()))
+            sent.clear()
+            got = asyncio.run(gate.replay_applied(Client()))
+        self.assertEqual(sent, [("/add", 1), ("/del", 2)])
+        self.assertEqual(len(got["replayed"]), 2)
+        self.assertTrue(ignored["approval_id"])

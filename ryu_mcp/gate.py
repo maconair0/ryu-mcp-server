@@ -126,3 +126,27 @@ class WriteGate:
                     current[item["id"]] = item
             self._save(current)
         return {"applied": applied, "failed": failed}
+
+    async def replay_applied(self, client) -> Dict[str, Any]:
+        """Re-send every write that was approved and applied, oldest first.
+
+        Ryu keeps no flows of its own: they live in the switches, and a switch
+        that restarts comes back empty. Approval was given once for the state
+        these writes describe, so putting that state back is not a new change;
+        replaying in the order they were applied keeps a later delete after the
+        add it removes.
+        """
+        with self._lock:
+            items = self._load()
+        done = sorted((i for i in items.values() if i["state"] == "applied"),
+                      key=lambda i: i.get("applied") or "")
+        replayed, failed = [], []
+        for item in done:
+            try:
+                for call in item["calls"]:
+                    await client.post(call["path"], call["body"])
+                replayed.append(item["id"])
+            except Exception as e:  # noqa: BLE001
+                failed.append({"id": item["id"], "error": str(e)})
+        self.audit({"event": "replayed", "ids": replayed, "failed": failed})
+        return {"replayed": replayed, "failed": failed}
