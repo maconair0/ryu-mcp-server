@@ -34,6 +34,29 @@ the operator in `RYU_MCP_APPROVER_TOKEN` on this server and held by the host;
 it is not a model's argument to choose. Unset, the tool always refuses and
 approval stays on the command line. Every use is in the audit log.
 
+**Confirming a strong change with the user, through the agent.** Before a *strong*
+write is even queued — a delete, an unmap, an undo, a wildcard flow, a bulk change
+(anything assessed `high` or `critical`) — the server asks the person behind the
+client, over MCP's elicitation. It is not an argument of any tool, so a model cannot
+supply it; the question is written by the server from the request it validated, so
+a model cannot soften what the person reads; and the answer comes back from the
+client, not through the model. A *no*, a dismissed question, or no answer within
+`RYU_MCP_CONFIRM_TIMEOUT` seconds queues nothing. A *critical* change also asks the
+person to type a short code from the request's digest, which a click cannot supply.
+Confirming is not approving: a confirmed request still waits for the operator.
+
+| `RYU_MCP_CONFIRM` | asks about |
+|---|---|
+| `strong` (default) | high and critical changes |
+| `all` | every write |
+| `off` | nothing |
+
+A client that cannot ask its user (no elicitation) gets the operator's approval alone
+and the reply says `confirmation.state: unavailable`; with `RYU_MCP_CONFIRM_STRICT=1`
+such a write is refused instead. In `direct` mode a strong change is confirmed before
+it is applied. The command line (`--approve`, `--undo`) has a person at it already
+and is not asked.
+
 **What the person approving is shown.** Each request comes back with a risk tier
 (`medium`, `high`, `critical`) and the reasons for it, from what the change would
 do to the switch rather than from how it is worded: a wildcard flow with no
@@ -118,6 +141,9 @@ it is reached over REST.
 | `RYU_STATE_DIR` | `ryu_mcp/state/` | approval queue and audit log |
 | `RYU_MCP_APPROVER_TOKEN` | — | lets a host approve over MCP; unset, approval is command-line only |
 | `RYU_MCP_APPROVAL_TTL` | `3600` | seconds a request stays approvable; `0` never expires |
+| `RYU_MCP_CONFIRM` | `strong` | which writes ask the user first: `strong`, `all` or `off` |
+| `RYU_MCP_CONFIRM_STRICT` | `0` | `1`: refuse a strong write when the client cannot ask its user |
+| `RYU_MCP_CONFIRM_TIMEOUT` | `300` | seconds the user has to answer; silence is a no |
 | `RYU_MCP_HOST` / `RYU_MCP_PORT` | `127.0.0.1` / `3005` | this server's endpoint |
 
 ## Running

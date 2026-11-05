@@ -25,6 +25,14 @@ class RyuConfig:
     approver_token: str = ""
     # Seconds a queued request stays approvable; 0 never expires.
     approval_ttl: int = 3600
+    # Asking the user, through the client, before a strong write is even queued:
+    # "strong" (high and critical risk, the default), "all" writes, or "off".
+    confirm_mode: str = "strong"
+    # A client that cannot ask its user (no MCP elicitation): refuse the write
+    # (strict) or fall back to the operator's approval alone (the default).
+    confirm_strict: bool = False
+    # Seconds the user has to answer; silence is a no.
+    confirm_timeout: float = 300.0
 
     @classmethod
     def from_env(cls, **overrides) -> "RyuConfig":
@@ -34,6 +42,9 @@ class RyuConfig:
         mode = _env("RYU_MCP_WRITE_MODE", default="queue").strip().lower()
         if mode not in ("queue", "direct"):
             raise ValueError(f"RYU_MCP_WRITE_MODE must be 'queue' or 'direct', not {mode!r}")
+        confirm = _env("RYU_MCP_CONFIRM", default="strong").strip().lower()
+        if confirm not in ("strong", "all", "off"):
+            raise ValueError(f"RYU_MCP_CONFIRM must be 'strong', 'all' or 'off', not {confirm!r}")
         cfg = cls(
             base_url=base.rstrip("/"),
             timeout=float(_env("RYU_TIMEOUT", default="20")),
@@ -44,6 +55,9 @@ class RyuConfig:
             mcp_port=int(_env("RYU_MCP_PORT", default="3005")),
             approver_token=_env("RYU_MCP_APPROVER_TOKEN", default=""),
             approval_ttl=int(_env("RYU_MCP_APPROVAL_TTL", default="3600")),
+            confirm_mode=confirm,
+            confirm_strict=_env("RYU_MCP_CONFIRM_STRICT", default="0").lower() in ("1", "true", "yes"),
+            confirm_timeout=float(_env("RYU_MCP_CONFIRM_TIMEOUT", default="300")),
         )
         for key, value in overrides.items():
             if value is not None:

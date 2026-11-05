@@ -11,6 +11,7 @@ The server under test is a real process, reached over SSE like any MCP client,
 with up to 64 callers at once. Phases:
   1 read load        2 write flood         3 concurrent approval from several processes
   4 killed mid-apply 5 Ryu unreachable     6 undo everything, compare with the start
+  7 a user behind the client is asked before a strong change (over SSE, no switch is touched)
 """
 import argparse
 import asyncio
@@ -25,7 +26,7 @@ import tempfile
 import time
 import urllib.request
 
-from mcp import ClientSession
+from mcp import ClientSession, types
 from mcp.client.sse import sse_client
 
 HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -310,6 +311,37 @@ async def phase6(S, ids, base):
           {d: (len(base.get(d, [])), len(after.get(d, []))) for d in after})
 
 
+async def phase7(S, base):
+    print("7. the user is asked before a strong change, over SSE")
+    shown = []
+    answers = [("accept", {"confirm": False}), ("decline", None), ("accept", {"confirm": True})]
+
+    async def user(context, params):
+        shown.append(params.message)
+        action, content = answers.pop(0)
+        return types.ElicitResult(action=action, content=content)
+
+    async with contextlib.AsyncExitStack() as stack:
+        r, w = await stack.enter_async_context(sse_client(f"http://127.0.0.1:{PORT}/sse"))
+        sess = await stack.enter_async_context(ClientSession(r, w, elicitation_callback=user))
+        await sess.initialize()
+        args = {"dpid": str(sorted(base)[0]), "match": {"in_port": CLIENT_PORT}, "priority": 190}
+
+        async def delete():
+            res = await sess.call_tool("ryu_delete_flow", args)
+            return json.loads(res.content[0].text)
+        before = len(S.items())
+        no, cancel, yes = await delete(), await delete(), await delete()
+    check("a 'no' and a dismissed question queue nothing",
+          no.get("status") == "declined" and cancel.get("status") == "declined" and len(S.items()) == before + 1,
+          (no.get("status"), cancel.get("status")))
+    check("a 'yes' queues it, marked as confirmed by the user", yes.get("status") == "queued_for_approval" and
+          yes["confirmation"]["state"] == "confirmed", yes)
+    check("the user was shown the server's own account of the change",
+          len(shown) == 3 and "HIGH" in shown[0] and "delete flow" in shown[0], shown[:1])
+    check("confirming is not approving: the switches are untouched", tables(S.url) == base)
+
+
 async def main_async(a):
     state = tempfile.mkdtemp(prefix="ryu-stress-")
     S = Server(a.ryu_url, state)
@@ -332,6 +364,8 @@ async def main_async(a):
             await phase5(S, base)
         if "6" in phases and ids:
             await phase6(S, ids, base)
+        if "7" in phases:
+            await phase7(S, base)
     finally:
         S.stop()
         final = tables(a.ryu_url)
@@ -345,7 +379,7 @@ async def main_async(a):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--ryu-url", required=True)
-    ap.add_argument("--phases", default="1,2,3,4,5,6")
+    ap.add_argument("--phases", default="1,2,3,4,5,6,7")
     return asyncio.run(main_async(ap.parse_args()))
 
 

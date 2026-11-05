@@ -343,7 +343,8 @@ class WriteGate:
     # ----- requesting -----
 
     def request(self, action: str, summary: str, calls: List[Dict[str, Any]],
-                undoes: Optional[str] = None) -> Dict[str, Any]:
+                undoes: Optional[str] = None,
+                confirmation: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         policy = POLICIES.get(action, {"risk_tier": "high", "max_changes_per_hour": 0})
         risk = assess(action, calls)
         with self._txn():
@@ -360,51 +361,70 @@ class WriteGate:
                     "created_ts": now, "digest": _digest(action, calls), **risk}
             if undoes:
                 item["undoes"] = undoes
+            if confirmation:
+                item["confirmation"] = confirmation
             items[item["id"]] = item
             self._save(items)
         self.audit({"event": "queued", "id": item["id"], "action": action,
-                    "risk_tier": risk["risk_tier"], "digest": item["digest"]})
+                    "risk_tier": risk["risk_tier"], "digest": item["digest"],
+                    **({"confirmation": confirmation["state"]} if confirmation else {})})
         return {"status": "queued_for_approval", "approval_id": item["id"],
                 "action": action, "summary": summary, "calls": len(calls),
                 "digest": item["digest"], **risk,
+                **({"confirmation": confirmation} if confirmation else {}),
                 "expires_in_s": self.ttl or None,
                 "what_happens_next": ("Nothing was sent to Ryu. An operator approves "
                                       f"with `run_ryu_mcp.py --approve {item['id']}`; "
                                       "only then are the flows installed. Once applied, "
                                       "`ryu_request_undo` queues the exact inverse.")}
 
-    def request_undo(self, item_id: str) -> Dict[str, Any]:
+    def _undo_candidate(self, items: Dict[str, Dict[str, Any]], item_id: str):
+        """(item, undo, error): what undoing `item_id` would be, or why it cannot be."""
+        item = items.get(item_id)
+        if item is None:
+            return None, None, f"no request {item_id}"
+        if item["state"] != "applied":
+            return None, None, f"{item_id} is {item['state']}, not applied: there is nothing to undo"
+        undo = item.get("undo") or {}
+        if item.get("undo_requested"):
+            return None, None, f"an undo of {item_id} is already queued as {item['undo_requested']}"
+        later = [i for i in items.values()
+                 if i["state"] == "applied" and not i.get("undone")
+                 and i["id"] != item.get("undo_requested")
+                 # an undo that reversed its target nets out with it
+                 and not (i.get("undoes") and (items.get(i["undoes"]) or {}).get("undone") == i["id"])
+                 and (i.get("applied") or "") > (item.get("applied") or "")
+                 and _keys(i["calls"]) & _keys(item["calls"])]
+        if later:
+            return None, None, (f"{later[0]['id']} ({later[0]['action']}) changed the same flow(s) after "
+                                f"this one; undo that first, or this would bring back state that is "
+                                f"no longer current")
+        if not undo.get("calls"):
+            return None, None, ("no undo is recorded for this change: "
+                                + ("the state it replaced could not be read"
+                                   if not undo.get("exact", False) else "it changed nothing"))
+        return item, undo, ""
+
+    def preview_undo(self, item_id: str) -> Dict[str, Any]:
+        """What `request_undo` would queue, without queueing it: so a person can be asked first."""
+        with self._txn():
+            item, undo, err = self._undo_candidate(self._load(), item_id)
+        if err:
+            return {"ok": False, "error": err}
+        action, summary = "ryu_undo", f"undo {item['action']}: {item['summary']}"
+        return {"ok": True, "action": action, "summary": summary, "calls": undo["calls"],
+                "exact": bool(undo.get("exact")), **assess(action, undo["calls"]),
+                "digest": _digest(action, undo["calls"])}
+
+    def request_undo(self, item_id: str,
+                     confirmation: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Queue the inverse of an applied write. It waits for approval like any write."""
         with self._txn():
-            items = self._load()
-            item = items.get(item_id)
-            if item is None:
-                return {"ok": False, "error": f"no request {item_id}"}
-            if item["state"] != "applied":
-                return {"ok": False, "error": f"{item_id} is {item['state']}, not applied: "
-                                              "there is nothing to undo"}
-            undo = item.get("undo") or {}
-            if item.get("undo_requested"):
-                return {"ok": False, "error": f"an undo of {item_id} is already queued "
-                                              f"as {item['undo_requested']}"}
-            later = [i for i in items.values()
-                     if i["state"] == "applied" and not i.get("undone")
-                     and i["id"] != item.get("undo_requested")
-                     # an undo that reversed its target nets out with it
-                     and not (i.get("undoes") and (items.get(i["undoes"]) or {}).get("undone") == i["id"])
-                     and (i.get("applied") or "") > (item.get("applied") or "")
-                     and _keys(i["calls"]) & _keys(item["calls"])]
-            if later:
-                return {"ok": False, "error": (
-                    f"{later[0]['id']} ({later[0]['action']}) changed the same flow(s) after "
-                    f"this one; undo that first, or this would bring back state that is "
-                    f"no longer current")}
-            if not undo.get("calls"):
-                return {"ok": False, "error": "no undo is recorded for this change: "
-                        + ("the state it replaced could not be read"
-                           if not undo.get("exact", False) else "it changed nothing")}
+            item, undo, err = self._undo_candidate(self._load(), item_id)
+        if err:
+            return {"ok": False, "error": err}
         out = self.request("ryu_undo", f"undo {item['action']}: {item['summary']}",
-                           undo["calls"], undoes=item_id)
+                           undo["calls"], undoes=item_id, confirmation=confirmation)
         if out.get("status") != "queued_for_approval":
             return {"ok": False, **out}
         with self._txn():

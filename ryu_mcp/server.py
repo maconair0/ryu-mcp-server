@@ -4,12 +4,12 @@ import json
 import time
 from typing import Any, Dict, List, Optional
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
-from . import schemas, summarise
+from . import confirm, schemas, summarise
 from .client import RyuClient, RyuError, RyuUnreachable, dpid_hex, dpid_int
 from .config import RyuConfig
-from .gate import WriteGate
+from .gate import WriteGate, _digest
 
 READ_TOOLS = ["ryu_health_check", "ryu_get_topology", "ryu_list_switches",
               "ryu_get_switch", "ryu_get_flows", "ryu_get_port_stats",
@@ -44,7 +44,29 @@ def create_server(cfg: RyuConfig, client: Optional[RyuClient] = None,
     mcp = FastMCP("ryu", host=cfg.mcp_host, port=cfg.mcp_port)
     strikes = {"n": 0, "until": 0.0}
 
-    async def _write(action: str, summary: str, calls: List[Dict[str, Any]]) -> str:
+    async def _confirmed(action: str, summary: str, calls: List[Dict[str, Any]], ctx: Context):
+        """Ask the user, when this change is one to ask about. (confirmation | None, refusal | None)."""
+        risk = gate.assess(action, calls)
+        if not confirm.needed(cfg.confirm_mode, risk["risk_tier"]):
+            return None, None
+        digest = _digest(action, calls)
+        got = await confirm.ask(ctx, cfg.confirm_timeout, action, summary, risk, digest, len(calls))
+        gate.audit({"event": f"confirmation_{got['state']}", "action": action, "digest": digest,
+                    "risk_tier": risk["risk_tier"], "reason": got.get("reason", "")})
+        if got["state"] == "declined":
+            return got, _reply({"ok": False, "status": "declined", "action": action, "summary": summary,
+                                "detail": f"{got['reason']}; nothing was queued or sent", "confirmation": got})
+        if got["state"] == "unavailable" and cfg.confirm_strict:
+            return got, _reply({"ok": False, "status": "refused", "action": action, "summary": summary,
+                                "detail": f"{got['reason']}, and RYU_MCP_CONFIRM_STRICT is set: "
+                                          f"this change needs the user's confirmation; nothing was queued or sent",
+                                "confirmation": got})
+        return got, None
+
+    async def _write(action: str, summary: str, calls: List[Dict[str, Any]], ctx: Context) -> str:
+        confirmation, refusal = await _confirmed(action, summary, calls, ctx)
+        if refusal:
+            return refusal
         # Direct mode is for a host that confirmed the change with a person. A
         # critical change (it blinds or black-holes the switch) is not waved
         # through on that: it is queued and waits for an explicit approval.
@@ -55,8 +77,9 @@ def create_server(cfg: RyuConfig, client: Optional[RyuClient] = None,
             gate.audit({"event": "applied_direct", "action": action, "summary": summary})
             return _reply({"ok": True, "status": "applied", "action": action,
                            "summary": summary, "calls": len(calls),
+                           **({"confirmation": confirmation} if confirmation else {}),
                            "note": "RYU_MCP_WRITE_MODE=direct: applied without queueing"})
-        return _reply({"ok": True, **gate.request(action, summary, calls)})
+        return _reply({"ok": True, **gate.request(action, summary, calls, confirmation=confirmation)})
 
     # ----- reads -----
 
@@ -170,7 +193,7 @@ def create_server(cfg: RyuConfig, client: Optional[RyuClient] = None,
 
     @mcp.tool()
     async def ryu_add_flow(dpid: str, match: Dict[str, Any], actions: List[Dict[str, Any]],
-                           priority: int = 100) -> str:
+                           ctx: Context, priority: int = 100) -> str:
         """Request a flow. Queued for operator approval; installs nothing by itself.
 
         actions use ofctl_rest form, e.g. [{"type": "OUTPUT", "port": 3}].
@@ -181,12 +204,12 @@ def create_server(cfg: RyuConfig, client: Optional[RyuClient] = None,
             return _reply({"ok": False, "error": "invalid", "detail": str(e)})
         try:
             return await _write("ryu_add_flow", f"add flow on {dpid_hex(dpid)} match={match}",
-                                [{"path": "/stats/flowentry/add", "body": body}])
+                                [{"path": "/stats/flowentry/add", "body": body}], ctx)
         except Exception as e:  # noqa: BLE001
             return _failure("add_flow", e)
 
     @mcp.tool()
-    async def ryu_delete_flow(dpid: str, match: Dict[str, Any], priority: int = 100) -> str:
+    async def ryu_delete_flow(dpid: str, match: Dict[str, Any], ctx: Context, priority: int = 100) -> str:
         """Request removal of exactly the flow with this match and priority."""
         try:
             body = schemas.flow_entry(dpid, match, [], priority)
@@ -194,12 +217,13 @@ def create_server(cfg: RyuConfig, client: Optional[RyuClient] = None,
             return _reply({"ok": False, "error": "invalid", "detail": str(e)})
         try:
             return await _write("ryu_delete_flow", f"delete flow on {dpid_hex(dpid)} match={match}",
-                                [{"path": "/stats/flowentry/delete_strict", "body": body}])
+                                [{"path": "/stats/flowentry/delete_strict", "body": body}], ctx)
         except Exception as e:  # noqa: BLE001
             return _failure("delete_flow", e)
 
     @mcp.tool()
-    async def ryu_map_vlan(dpid: str, client_port: int, uplink_port: int, vlan_id: int) -> str:
+    async def ryu_map_vlan(dpid: str, client_port: int, uplink_port: int, vlan_id: int,
+                           ctx: Context) -> str:
         """Map a client port onto a VLAN on the uplink toward the core, both directions.
 
         The edge domain's handover: untagged client traffic is tagged and sent up;
@@ -213,12 +237,13 @@ def create_server(cfg: RyuConfig, client: Optional[RyuClient] = None,
             return await _write(
                 "ryu_map_vlan",
                 f"map {dpid_hex(dpid)} port {client_port} <-> uplink {uplink_port} vlan {vlan_id}",
-                [{"path": "/stats/flowentry/add", "body": b} for b in bodies])
+                [{"path": "/stats/flowentry/add", "body": b} for b in bodies], ctx)
         except Exception as e:  # noqa: BLE001
             return _failure("map_vlan", e)
 
     @mcp.tool()
-    async def ryu_unmap_vlan(dpid: str, client_port: int, uplink_port: int, vlan_id: int) -> str:
+    async def ryu_unmap_vlan(dpid: str, client_port: int, uplink_port: int, vlan_id: int,
+                             ctx: Context) -> str:
         """Remove a VLAN mapping: the exact inverse of ryu_map_vlan, both directions.
 
         Takes the same four arguments the mapping was made with. Only those two
@@ -233,12 +258,12 @@ def create_server(cfg: RyuConfig, client: Optional[RyuClient] = None,
             return await _write(
                 "ryu_unmap_vlan",
                 f"unmap {dpid_hex(dpid)} port {client_port} <-> uplink {uplink_port} vlan {vlan_id}",
-                [{"path": "/stats/flowentry/delete_strict", "body": b} for b in bodies])
+                [{"path": "/stats/flowentry/delete_strict", "body": b} for b in bodies], ctx)
         except Exception as e:  # noqa: BLE001
             return _failure("unmap_vlan", e)
 
     @mcp.tool()
-    async def ryu_request_undo(approval_id: str) -> str:
+    async def ryu_request_undo(approval_id: str, ctx: Context) -> str:
         """Queue the exact inverse of a write that was applied. It still needs approval.
 
         The state a change replaced was read before it was sent; this requests
@@ -246,7 +271,13 @@ def create_server(cfg: RyuConfig, client: Optional[RyuClient] = None,
         is queued, with its own approval id, and installs nothing until approved.
         """
         try:
-            return _reply(gate.request_undo(approval_id))
+            preview = gate.preview_undo(approval_id)
+            if not preview["ok"]:
+                return _reply(preview)
+            confirmation, refusal = await _confirmed("ryu_undo", preview["summary"], preview["calls"], ctx)
+            if refusal:
+                return refusal
+            return _reply(gate.request_undo(approval_id, confirmation=confirmation))
         except Exception as e:  # noqa: BLE001
             return _failure("request_undo", e)
 
