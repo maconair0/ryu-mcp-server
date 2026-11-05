@@ -18,6 +18,8 @@ step installs it:
 python run_ryu_mcp.py --list-pending
 python run_ryu_mcp.py --approve <id>     # or --reject <id>
 python run_ryu_mcp.py --drain            # install approved flows
+python run_ryu_mcp.py --undo <id>        # queue the inverse of an applied write
+python run_ryu_mcp.py --recover          # settle a request whose process died mid-apply
 ```
 
 No tool takes an argument that skips this. A flag the model can set is a flag
@@ -31,6 +33,36 @@ MCP with `ryu_approve_request(approval_id, approver_token)`. The token is set by
 the operator in `RYU_MCP_APPROVER_TOKEN` on this server and held by the host;
 it is not a model's argument to choose. Unset, the tool always refuses and
 approval stays on the command line. Every use is in the audit log.
+
+**What the person approving is shown.** Each request comes back with a risk tier
+(`medium`, `high`, `critical`) and the reasons for it, from what the change would
+do to the switch rather than from how it is worded: a wildcard flow with no
+forwarding action drops every packet on the switch, and deleting the priority-0
+flow stops the switch asking the controller about anything new. A *critical*
+change is queued even when the server is started in `direct` mode.
+
+**What keeps an approval honest.**
+
+- *A digest.* Every request carries a fingerprint of what will be sent, checked
+  again when it is applied; an entry edited after it was requested is refused.
+  A host that shows its person the digest can pass it back as `expected_digest`,
+  so its approval holds only for the request that person saw.
+- *Expiry.* A request stays approvable for `RYU_MCP_APPROVAL_TTL` seconds
+  (default 3600), so an approval is not applied to a network that has moved on.
+- *One application.* An approved request is claimed under a lock shared by the
+  server and the command line before anything is sent, so it cannot be applied twice.
+- *Guessing.* Five wrong approver tokens in a row pause approval over MCP for five
+  minutes. The command line is unaffected.
+
+**Undoing, and not half-doing.** Before a request is sent, the flows it would
+replace or remove are read from the switch and kept. `ryu_request_undo` (or
+`run_ryu_mcp.py --undo <id>`) then queues the exact inverse: it deletes what was
+added, or puts back what was overwritten or removed. It is a request like any
+other and waits for approval. It is refused if a later change touched the same
+flows (undo that first), and no undo is offered if the earlier state could not be
+read or has an action this server does not know — better none than a wrong one.
+A request that fails partway (the second flow of a VLAN map) is rolled back from
+the same record, so it never leaves a circuit that carries traffic out and none back.
 
 **Surviving a restart.** Ryu holds no flows of its own; a switch that restarts
 comes back empty. The server watches the connected switches (every 30 s,
@@ -57,7 +89,8 @@ Nothing new is approved by this: it puts back the state approval was given for.
 | `ryu_delete_flow` | removal of one exact flow (`/stats/flowentry/delete_strict`) |
 | `ryu_map_vlan` | a client port onto a VLAN on an uplink, both directions |
 | `ryu_unmap_vlan` | removes a mapping: the exact inverse of `ryu_map_vlan`, same four arguments |
-| `ryu_approve_request` | approves and applies one queued write — only with the operator's `RYU_MCP_APPROVER_TOKEN` |
+| `ryu_request_undo` | queues the exact inverse of an applied write; still needs approval |
+| `ryu_approve_request` | approves and applies one queued write — only with the operator's `RYU_MCP_APPROVER_TOKEN`; optional `expected_digest` |
 
 Every tool returns JSON with `ok`. A refusal or an unreachable Ryu comes back as
 data, not as an exception.
@@ -83,6 +116,8 @@ it is reached over REST.
 | `RYU_TIMEOUT` | `20` | seconds |
 | `RYU_MCP_WRITE_MODE` | `queue` | `queue` or `direct` |
 | `RYU_STATE_DIR` | `ryu_mcp/state/` | approval queue and audit log |
+| `RYU_MCP_APPROVER_TOKEN` | — | lets a host approve over MCP; unset, approval is command-line only |
+| `RYU_MCP_APPROVAL_TTL` | `3600` | seconds a request stays approvable; `0` never expires |
 | `RYU_MCP_HOST` / `RYU_MCP_PORT` | `127.0.0.1` / `3005` | this server's endpoint |
 
 ## Running
@@ -143,23 +178,37 @@ ryu_map_vlan(dpid="0000000000000101", client_port=1, uplink_port=3, vlan_id=10)
 - **A switch has two names.** `rest_topology` reports dpids as 16-digit hex
   (`0000000000000101`); `ofctl_rest` takes them as decimal (`257`). Every tool
   accepts either.
-- **A VLAN match needs the present bit.** Under OpenFlow 1.3 a tagged VID is
-  matched as `vid | 0x1000`. A bare `10` matches nothing and installs without
-  complaint. `ryu_map_vlan` sets it.
+- **A VLAN match and the present bit.** Under OpenFlow 1.3 a tagged VID is matched
+  as `vid | 0x1000`; `ryu_map_vlan` sets it. Ryu 4.34 with Open vSwitch also reads
+  a bare `10` as VLAN 10, so the two spellings meet on the same flow — and both are
+  reported back as `dl_vlan`, which is why flows are compared under Ryu's names.
 - **Ryu ignores match fields it does not know.** A typo like `in_prt` is dropped
   and the flow matches more than intended, so match fields and action types are
   validated before anything is queued.
+- **Ryu answers 200 to flows the switch then refuses.** A missing prerequisite
+  (`ip_proto` without `eth_type`), a group that does not exist, `DEC_NW_TTL` without
+  an IP match, an action type spelled `output`: Ryu accepts, Open vSwitch does not
+  install, nothing reports it. Prerequisites and spelling are checked when the
+  request is made; for the rest, after applying, the flow table is read back and a
+  write is only `applied` if the switch holds it (`verified: true`), otherwise it is
+  `failed` and rolled back.
 - **Ryu's own flows are hidden.** The table-miss and LLDP punt flows it installs
   are not anybody's configuration; `include_controller_defaults=true` shows them.
 
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -t .
+python -m unittest discover -s tests/unit -t .     # no Ryu or network needed
 ```
 
-No Ryu or network needed; the REST API is dummy. Includes tests that a queued or
-rejected write leaves Ryu untouched.
+`tests/` is split by what each part needs:
+
+| folder | holds |
+|---|---|
+| `unit/` | the unit tests, against a stateful fake of Ryu's REST API |
+| `support/` | that fake and the rig the tests share |
+| `security/` | `adversarial` (attacks and a fuzzer against the tool surface) and `mutation_check` (disables each guard in turn) — `python -m tests.security.adversarial` |
+| `live/` | `live_lab` and `stress_live`, against a real Ryu and Open vSwitch; they write to its switches, so point them only at a lab you own — `python -m tests.live.live_lab --ryu-url … --container …` |
 
 ## Licence
 

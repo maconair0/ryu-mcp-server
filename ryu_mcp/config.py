@@ -23,6 +23,8 @@ class RyuConfig:
     # write after a person has confirmed it there (ryu_approve_request).
     # Unset: no approval over MCP at all, only the CLI.
     approver_token: str = ""
+    # Seconds a queued request stays approvable; 0 never expires.
+    approval_ttl: int = 3600
 
     @classmethod
     def from_env(cls, **overrides) -> "RyuConfig":
@@ -41,6 +43,7 @@ class RyuConfig:
             mcp_host=_env("RYU_MCP_HOST", default="127.0.0.1"),
             mcp_port=int(_env("RYU_MCP_PORT", default="3005")),
             approver_token=_env("RYU_MCP_APPROVER_TOKEN", default=""),
+            approval_ttl=int(_env("RYU_MCP_APPROVAL_TTL", default="3600")),
         )
         for key, value in overrides.items():
             if value is not None:

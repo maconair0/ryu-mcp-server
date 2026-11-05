@@ -23,14 +23,21 @@ def dpid_int(dpid: Any) -> int:
     switch has two spellings depending on which app is asked, so every tool
     accepts either and converts here, once.
     """
+    if isinstance(dpid, bool):
+        raise ValueError(f"not a datapath id: {dpid!r}")
     if isinstance(dpid, int):
-        return dpid
-    text = str(dpid).strip().lower()
-    if text.startswith("0x"):
-        return int(text, 16)
-    if len(text) == 16 or any(c in "abcdef" for c in text):
-        return int(text, 16)
-    return int(text)
+        n = dpid
+    else:
+        text = str(dpid).strip().lower()
+        if text.startswith("0x"):
+            n = int(text, 16)
+        elif len(text) == 16 or any(c in "abcdef" for c in text):
+            n = int(text, 16)
+        else:
+            n = int(text)
+    if not 0 <= n < 2 ** 64:
+        raise ValueError(f"datapath id out of range: {dpid!r}")
+    return n
 
 
 def dpid_hex(dpid: Any) -> str:

@@ -104,7 +104,9 @@ class GateTests(unittest.TestCase):
         return asyncio.run(go())
 
     def posts(self):
-        return [p for m, p in self.log if m == "POST"]
+        # Ryu's stats API reads with POST (/stats/flow/<dpid>); only flowentry
+        # paths change anything.
+        return [p for m, p in self.log if m == "POST" and p.startswith("/stats/flowentry")]
 
     def test_a_queued_write_sends_nothing(self):
         out = self.call("ryu_map_vlan", {"dpid": "257", "client_port": 1,

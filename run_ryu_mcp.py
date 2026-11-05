@@ -65,28 +65,45 @@ def main(argv=None) -> int:
     ap.add_argument("--list-pending", action="store_true")
     ap.add_argument("--approve", metavar="ID")
     ap.add_argument("--reject", metavar="ID")
+    ap.add_argument("--undo", metavar="ID",
+                    help="queue the exact inverse of an applied write (still needs --approve)")
     ap.add_argument("--drain", action="store_true", help="install approved flows and exit")
     ap.add_argument("--watch-interval", type=int,
                     default=int(os.getenv("RYU_REPLAY_WATCH", "30")),
                     help="seconds between checks for a switch that reconnected "
                          "empty, whose applied writes are then replayed; 0 is off")
+    ap.add_argument("--recover", action="store_true",
+                    help="settle requests whose process died after claiming them, "
+                         "from what the switches hold, and exit")
     ap.add_argument("--replay", action="store_true",
                     help="re-install every applied write, oldest first, after a "
                          "switch or the lab restarted, and exit")
     a = ap.parse_args(argv)
     cfg = RyuConfig.from_env(base_url=a.ryu_url.rstrip("/") if a.ryu_url else None,
                              mcp_port=a.port)
-    gate = WriteGate(cfg.state_dir)
+    gate = WriteGate(cfg.state_dir, ttl=cfg.approval_ttl)
 
     if a.list_pending:
         print(json.dumps(gate.pending(), indent=1)); return 0
+    if a.undo:
+        out = gate.request_undo(a.undo)
+        print(json.dumps(out, indent=1)); return 0 if out.get("ok") else 1
     if a.approve or a.reject:
         print(json.dumps(gate.decide(a.approve or a.reject, approve=bool(a.approve))))
         return 0
+    if a.recover:
+        async def recover():
+            c = RyuClient(cfg.base_url, cfg.timeout)
+            try:
+                return await gate.recover(c)
+            finally:
+                await c.close()
+        print(json.dumps(asyncio.run(recover()))); return 0
     if a.drain:
         async def drain():
             c = RyuClient(cfg.base_url, cfg.timeout)
             try:
+                await gate.recover(c)
                 return await gate.apply_approved(c)
             finally:
                 await c.close()
@@ -114,6 +131,18 @@ def main(argv=None) -> int:
         except Exception as e:  # noqa: BLE001
             print(f"Ryu at {cfg.base_url}: NOT reachable ({e})"); return 1
 
+    try:  # a request left claimed by a process that died is settled before serving
+        async def settle():
+            c = RyuClient(cfg.base_url, cfg.timeout)
+            try:
+                return await gate.recover(c)
+            finally:
+                await c.close()
+        got = asyncio.run(settle())
+        if got["settled"] or got["left"]:
+            print(f"recovered interrupted requests: {got}", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001 - Ryu being down at start is a normal state
+        print(f"recovery skipped: {type(e).__name__}", file=sys.stderr)
     if a.watch_interval > 0 and a.transport != "stdio":
         start_replay_watch(cfg, gate, a.watch_interval)
     server = create_server(cfg, gate=gate)

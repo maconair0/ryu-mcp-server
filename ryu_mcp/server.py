@@ -1,5 +1,7 @@
 """The MCP tools. Reads answer; writes request."""
+import hmac
 import json
+import time
 from typing import Any, Dict, List, Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -10,9 +12,13 @@ from .config import RyuConfig
 from .gate import WriteGate
 
 READ_TOOLS = ["ryu_health_check", "ryu_get_topology", "ryu_list_switches",
-              "ryu_get_switch", "ryu_get_flows", "ryu_get_port_stats"]
+              "ryu_get_switch", "ryu_get_flows", "ryu_get_port_stats",
+              "ryu_compute_path"]
 WRITE_TOOLS = ["ryu_add_flow", "ryu_delete_flow", "ryu_map_vlan", "ryu_unmap_vlan",
-               "ryu_approve_request"]
+               "ryu_request_undo", "ryu_approve_request"]
+# Wrong approver tokens in a row before approval over MCP stops answering, and
+# for how long. The token is a secret a model could otherwise guess at.
+TOKEN_STRIKES, TOKEN_LOCKOUT_S = 5, 300
 
 
 def _reply(obj: Dict[str, Any]) -> str:
@@ -34,11 +40,16 @@ def _failure(op: str, e: Exception) -> str:
 def create_server(cfg: RyuConfig, client: Optional[RyuClient] = None,
                   gate: Optional[WriteGate] = None) -> FastMCP:
     client = client or RyuClient(cfg.base_url, cfg.timeout)
-    gate = gate or WriteGate(cfg.state_dir)
+    gate = gate or WriteGate(cfg.state_dir, ttl=cfg.approval_ttl)
     mcp = FastMCP("ryu", host=cfg.mcp_host, port=cfg.mcp_port)
+    strikes = {"n": 0, "until": 0.0}
 
     async def _write(action: str, summary: str, calls: List[Dict[str, Any]]) -> str:
-        if cfg.write_mode == "direct":
+        # Direct mode is for a host that confirmed the change with a person. A
+        # critical change (it blinds or black-holes the switch) is not waved
+        # through on that: it is queued and waits for an explicit approval.
+        critical = gate.assess(action, calls)["risk_tier"] == "critical"
+        if cfg.write_mode == "direct" and not critical:
             for call in calls:
                 await client.post(call["path"], call["body"])
             gate.audit({"event": "applied_direct", "action": action, "summary": summary})
@@ -227,25 +238,51 @@ def create_server(cfg: RyuConfig, client: Optional[RyuClient] = None,
             return _failure("unmap_vlan", e)
 
     @mcp.tool()
-    async def ryu_approve_request(approval_id: str, approver_token: str) -> str:
+    async def ryu_request_undo(approval_id: str) -> str:
+        """Queue the exact inverse of a write that was applied. It still needs approval.
+
+        The state a change replaced was read before it was sent; this requests
+        putting that back. Undoing never happens by itself: like every write it
+        is queued, with its own approval id, and installs nothing until approved.
+        """
+        try:
+            return _reply(gate.request_undo(approval_id))
+        except Exception as e:  # noqa: BLE001
+            return _failure("request_undo", e)
+
+    @mcp.tool()
+    async def ryu_approve_request(approval_id: str, approver_token: str,
+                                  expected_digest: str = "") -> str:
         """Approve and apply one queued write, for a host that confirmed it with a person.
 
         Needs the token the operator configured on this server
         (RYU_MCP_APPROVER_TOKEN). With none configured this always refuses and
         approval stays CLI-only. The token is a credential of the host system,
         not something a model chooses: a host should present it only after its
-        own human confirmation of this exact change.
+        own human confirmation of this exact change. If it passes the request's
+        `digest` as `expected_digest`, the approval holds only for that request.
         """
-        import hmac
         if not cfg.approver_token:
             return _reply({"ok": False, "error": "disabled",
                            "detail": "no RYU_MCP_APPROVER_TOKEN is configured on this "
                                      "server; approve with run_ryu_mcp.py --approve"})
-        if not hmac.compare_digest(str(approver_token), cfg.approver_token):
+        if time.time() < strikes["until"]:
+            gate.audit({"event": "approval_locked_out", "id": approval_id})
+            return _reply({"ok": False, "error": "locked",
+                           "detail": "too many wrong tokens; approval over MCP is "
+                                     "paused. Approve with run_ryu_mcp.py --approve"})
+        # Bytes, not str: compare_digest raises on a non-ASCII str, and an
+        # exception is not a refusal.
+        if not hmac.compare_digest(str(approver_token).encode(), cfg.approver_token.encode()):
+            strikes["n"] += 1
+            if strikes["n"] >= TOKEN_STRIKES:
+                strikes["n"], strikes["until"] = 0, time.time() + TOKEN_LOCKOUT_S
             gate.audit({"event": "approval_refused_bad_token", "id": approval_id})
             return _reply({"ok": False, "error": "refused", "detail": "approver token mismatch"})
+        strikes["n"] = 0
         try:
-            return _reply(await gate.approve_and_apply(approval_id, client, by="mcp-approver"))
+            return _reply(await gate.approve_and_apply(
+                approval_id, client, by="mcp-approver", expected_digest=expected_digest))
         except Exception as e:  # noqa: BLE001
             return _failure("approve_request", e)
 
