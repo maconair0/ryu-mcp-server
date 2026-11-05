@@ -8,6 +8,8 @@ human approval gate. It was built as the **client-access edge** of a multi-domai
 setup, where Ryu maps enterprise VLAN traffic onto the uplinks that hand off to
 the packet core.
 
+Paper: [Operator-Controlled MCP: A Security Layer for AI Agent Operations on Networks](paper/ryu-mcp-paper.pdf) (source in [`paper/`](paper/)).
+
 ## Why the write tools do not write
 
 The write tools validate a flow, put it on an approval queue on disk, and return
